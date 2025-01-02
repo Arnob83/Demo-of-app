@@ -7,8 +7,23 @@ import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Authenticate using the service account's credentials and access the Google Sheet
+def authenticate_google_sheets():
+    # Define the scope for API access
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+    # Your service account credentials JSON file path (downloaded from the Google Developers Console)
+    creds = ServiceAccountCredentials.from_json_keyfile_name('your_service_account_credentials.json', scope)
+
+    # Authenticate with Google Sheets
+    client = gspread.authorize(creds)
+    
+    # Open the spreadsheet using the sheet ID from the URL
+    sheet = client.open_by_key('1lz4aBG6vADwvReven8XUbxRRHSQl6iMHiJT1TEedzWs').sheet1
+    return sheet
+
 # URL to the raw xgb_model_new.pkl file in your GitHub repository
-url = "https://raw.githubusercontent.com/Arnob83/Demo-of-app/main/xgb_model_new.pkl"
+url = "https://raw.githubusercontent.com/Arnob83/Bank-Loan-APP/main/xgb_model_new.pkl"
 
 # Download the xgb_model_new.pkl file and save it locally
 response = requests.get(url)
@@ -18,20 +33,6 @@ with open("xgb_model_new.pkl", "wb") as file:
 # Load the trained model
 with open("xgb_model_new.pkl", "rb") as pickle_in:
     classifier = pickle.load(pickle_in)
-
-# Update Google Sheets
-def update_google_sheet(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, Prediction):
-    # Define the scope and credentials for Google Sheets API
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name("google_credentials.json", scope)
-    client = gspread.authorize(credentials)
-
-    # Open the Google Sheet by URL or name
-    sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1lz4aBG6vADwvReven8XUbxRRHSQl6iMHiJT1TEedzWs/edit#gid=0")
-    worksheet = sheet.get_worksheet(0)  # Select the first worksheet
-
-    # Append a new row with the input data and prediction result
-    worksheet.append_row([Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, Prediction])
 
 @st.cache_data
 def prediction(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term):
@@ -55,12 +56,16 @@ def prediction(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, 
     return pred_label, input_data
 
 def explain_prediction(input_data, final_result):
+    """
+    Analyze features and provide a detailed explanation of the prediction,
+    along with a bar chart for SHAP values.
+    """
     # Initialize SHAP explainer specifically for XGBoost
     explainer = shap.TreeExplainer(classifier)
     shap_values = explainer.shap_values(input_data)
 
     # Extract SHAP values for the input data
-    shap_values_for_input = shap_values[0]
+    shap_values_for_input = shap_values[0]  # SHAP values for the first row of input_data
 
     # Prepare feature importance data
     feature_names = input_data.columns
@@ -71,11 +76,13 @@ def explain_prediction(input_data, final_result):
             f"- **{feature}**: {'Positive' if shap_value > 0 else 'Negative'} contribution with a SHAP value of {shap_value:.2f}\n"
         )
 
+    # Identify the main factors contributing to the decision
     if final_result == 'Rejected':
         explanation_text += "\nThe loan was rejected because the negative contributions outweighed the positive ones."
     else:
         explanation_text += "\nThe loan was approved because the positive contributions outweighed the negative ones."
 
+    # Create bar chart for SHAP values
     plt.figure(figsize=(8, 5))
     plt.barh(feature_names, shap_values_for_input, color=["green" if val > 0 else "red" for val in shap_values_for_input])
     plt.xlabel("SHAP Value (Impact on Prediction)")
@@ -86,30 +93,65 @@ def explain_prediction(input_data, final_result):
     return explanation_text, plt
 
 def main():
-    st.title("Loan Prediction ML App")
+    # Authenticate Google Sheets
+    sheet = authenticate_google_sheets()
 
+    # Front-end elements
+    st.markdown(
+        """
+        <style>
+        .main-container {
+            background-color: #f4f6f9;
+            border: 2px solid #e6e8eb;
+            padding: 20px;
+            border-radius: 10px;
+        }
+        .header {
+            background-color: #4caf50;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .header h1 {
+            color: white;
+        }
+        </style>
+        <div class="main-container">
+        <div class="header">
+        <h1>Loan Prediction ML App</h1>
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # User inputs
     Credit_History = st.selectbox("Credit History", ("Unclear Debts", "Clear Debts"))
     Education_1 = st.selectbox('Education', ("Under_Graduate", "Graduate"))
     ApplicantIncome = st.number_input("Applicant's yearly Income", min_value=0.0)
     CoapplicantIncome = st.number_input("Co-applicant's yearly Income", min_value=0.0)
     Loan_Amount_Term = st.number_input("Loan Term (in months)", min_value=0.0)
 
+    # Collect and add data to the Google Sheet when predicting
     if st.button("Predict"):
         result, input_data = prediction(
-            Credit_History,
+            Credit_History,  # Correct order
             Education_1,
             ApplicantIncome,
             CoapplicantIncome,
             Loan_Amount_Term
         )
 
-        update_google_sheet(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, result)
+        # Store user inputs in Google Sheets
+        sheet.append_row([Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, result])
 
+        # Show result in color
         if result == "Approved":
-            st.success(f'Your loan is {result}')
+            st.success(f'Your loan is {result}', icon="✅")
         else:
-            st.error(f'Your loan is {result}')
+            st.error(f'Your loan is {result}', icon="❌")
 
+        # Explanation: Feature Contributions and SHAP Bar Plot
         st.header("Explanation of Prediction")
         explanation_text, bar_chart = explain_prediction(input_data, final_result=result)
         st.write(explanation_text)
@@ -117,3 +159,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
