@@ -1,26 +1,11 @@
+import sqlite3
 import pickle
 import streamlit as st
 import shap
 import matplotlib.pyplot as plt
 import pandas as pd
 import requests
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
-# Authenticate using the service account's credentials and access the Google Sheet
-def authenticate_google_sheets():
-    # Define the scope for API access
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-
-    # Your service account credentials JSON file path (downloaded from the Google Developers Console)
-    creds = ServiceAccountCredentials.from_json_keyfile_name('your_service_account_credentials.json', scope)
-
-    # Authenticate with Google Sheets
-    client = gspread.authorize(creds)
-    
-    # Open the spreadsheet using the sheet ID from the URL
-    sheet = client.open_by_key('1lz4aBG6vADwvReven8XUbxRRHSQl6iMHiJT1TEedzWs').sheet1
-    return sheet
+import os
 
 # URL to the raw xgb_model_new.pkl file in your GitHub repository
 url = "https://raw.githubusercontent.com/Arnob83/Bank-Loan-APP/main/xgb_model_new.pkl"
@@ -34,6 +19,36 @@ with open("xgb_model_new.pkl", "wb") as file:
 with open("xgb_model_new.pkl", "rb") as pickle_in:
     classifier = pickle.load(pickle_in)
 
+# Initialize SQLite database
+def init_db():
+    conn = sqlite3.connect("loan_data.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS loan_predictions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        credit_history TEXT,
+        education TEXT,
+        applicant_income REAL,
+        coapplicant_income REAL,
+        loan_amount_term REAL,
+        result TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+# Save prediction data to the database
+def save_to_database(credit_history, education, applicant_income, coapplicant_income, loan_amount_term, result):
+    conn = sqlite3.connect("loan_data.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO loan_predictions (credit_history, education, applicant_income, coapplicant_income, loan_amount_term, result)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (credit_history, education, applicant_income, coapplicant_income, loan_amount_term, result))
+    conn.commit()
+    conn.close()
+
+# Prediction function
 @st.cache_data
 def prediction(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term):
     # Convert user input
@@ -55,48 +70,37 @@ def prediction(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, 
     pred_label = 'Approved' if prediction[0] == 1 else 'Rejected'
     return pred_label, input_data
 
+# Explanation function
 def explain_prediction(input_data, final_result):
-    """
-    Analyze features and provide a detailed explanation of the prediction,
-    along with a bar chart for SHAP values.
-    """
-    # Initialize SHAP explainer specifically for XGBoost
     explainer = shap.TreeExplainer(classifier)
     shap_values = explainer.shap_values(input_data)
+    shap_values_for_input = shap_values[0]
 
-    # Extract SHAP values for the input data
-    shap_values_for_input = shap_values[0]  # SHAP values for the first row of input_data
-
-    # Prepare feature importance data
     feature_names = input_data.columns
-
     explanation_text = f"**Why your loan is {final_result}:**\n\n"
     for feature, shap_value in zip(feature_names, shap_values_for_input):
         explanation_text += (
             f"- **{feature}**: {'Positive' if shap_value > 0 else 'Negative'} contribution with a SHAP value of {shap_value:.2f}\n"
         )
-
-    # Identify the main factors contributing to the decision
     if final_result == 'Rejected':
         explanation_text += "\nThe loan was rejected because the negative contributions outweighed the positive ones."
     else:
         explanation_text += "\nThe loan was approved because the positive contributions outweighed the negative ones."
 
-    # Create bar chart for SHAP values
     plt.figure(figsize=(8, 5))
     plt.barh(feature_names, shap_values_for_input, color=["green" if val > 0 else "red" for val in shap_values_for_input])
     plt.xlabel("SHAP Value (Impact on Prediction)")
     plt.ylabel("Features")
     plt.title("Feature Contributions to Prediction")
     plt.tight_layout()
-
     return explanation_text, plt
 
+# Main Streamlit app
 def main():
-    # Authenticate Google Sheets
-    sheet = authenticate_google_sheets()
+    # Initialize database
+    init_db()
 
-    # Front-end elements
+    # App layout
     st.markdown(
         """
         <style>
@@ -132,31 +136,44 @@ def main():
     CoapplicantIncome = st.number_input("Co-applicant's yearly Income", min_value=0.0)
     Loan_Amount_Term = st.number_input("Loan Term (in months)", min_value=0.0)
 
-    # Collect and add data to the Google Sheet when predicting
+    # Prediction and database saving
     if st.button("Predict"):
         result, input_data = prediction(
-            Credit_History,  # Correct order
+            Credit_History,
             Education_1,
             ApplicantIncome,
             CoapplicantIncome,
             Loan_Amount_Term
         )
 
-        # Store user inputs in Google Sheets
-        sheet.append_row([Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, result])
+        # Save data to database
+        save_to_database(Credit_History, Education_1, ApplicantIncome, CoapplicantIncome, Loan_Amount_Term, result)
 
-        # Show result in color
+        # Display the prediction
         if result == "Approved":
             st.success(f'Your loan is {result}', icon="✅")
         else:
             st.error(f'Your loan is {result}', icon="❌")
 
-        # Explanation: Feature Contributions and SHAP Bar Plot
+        # Explain the prediction
         st.header("Explanation of Prediction")
         explanation_text, bar_chart = explain_prediction(input_data, final_result=result)
         st.write(explanation_text)
         st.pyplot(bar_chart)
 
+    # Download database button
+    if st.button("Download Database"):
+        if os.path.exists("loan_data.db"):
+            with open("loan_data.db", "rb") as f:
+                st.download_button(
+                    label="Download SQLite Database",
+                    data=f,
+                    file_name="loan_data.db",
+                    mime="application/octet-stream"
+                )
+        else:
+            st.error("Database file not found.")
+
 if __name__ == '__main__':
     main()
-
+            
