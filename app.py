@@ -8,10 +8,10 @@ import requests
 import os
 
 # URL to the raw xgb_model_new.pkl file in your GitHub repository
-URL = "https://raw.githubusercontent.com/Arnob83/Demo-of-app/main/xgb_model_new.pkl"
+url = "https://raw.githubusercontent.com/Arnob83/Demo-of-app/main/xgb_model_new.pkl"
 
 # Download the xgb_model_new.pkl file and save it locally
-response = requests.get(URL)
+response = requests.get(url)
 with open("xgb_model_new.pkl", "wb") as file:
     file.write(response.content)
 
